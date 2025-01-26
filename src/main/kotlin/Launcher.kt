@@ -15,8 +15,12 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import net.schmizz.sshj.SSHClient
+import net.schmizz.sshj.common.IOUtils
+import net.schmizz.sshj.connection.channel.direct.Session
 import java.io.Closeable
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -74,7 +78,87 @@ class LaunchTask(val launchOperations: OperationsMap) : Task {
     }
 
     override suspend fun transit(launcher: Launcher): Task {
-        return ShutdownTask.create(launcher, launchedVms)
+        return RunTask.create(launcher, launchedVms)
+    }
+}
+
+@Serializable
+@SerialName("RunTask")
+class RunTaskSurrogate(val vms: List<String>)
+
+object RunTaskSerializer : KSerializer<RunTask> {
+    override val descriptor: SerialDescriptor = SerialDescriptor("kvas.RunTask", RunTaskSurrogate.serializer().descriptor)
+
+    override fun serialize(encoder: Encoder, value: RunTask) {
+        val surrogate = RunTaskSurrogate(value.vms)
+        encoder.encodeSerializableValue(RunTaskSurrogate.serializer(), surrogate)
+    }
+
+    override fun deserialize(decoder: Decoder): RunTask {
+        throw UnsupportedOperationException("Deserialization is not supported")
+    }
+}
+
+@Serializable(with = RunTaskSerializer::class)
+class RunTask(val vms: List<String>, private val sessions: List<Session>, private val commands: List<String>, private val execs: MutableList<Pair<Int, Session.Command?>>) : Task {
+    companion object {
+        fun create(launcher: Launcher, vms: List<String>): RunTask {
+            val execs: MutableList<Pair<Int, Session.Command?>> = vms.map {
+                Pair(-1, null)
+            }.toMutableList()
+            val sessions = vms.map {
+                launcher.createSession(it)
+            }
+            val commands = listOf("ping -c 1 google.com")
+            return RunTask(vms, sessions, commands, execs)
+        }
+    }
+
+    override fun canTransit(): Boolean {
+        var allFinished = true
+        val totalVms = execs.size
+        for (i in 0..<totalVms) {
+            val cur = execs[i]
+            val session = sessions[i]
+            if (cur.first == -1) {
+                allFinished = false
+                val cmd = session.exec(commands[0])
+                Logger.getGlobal().info("${vms[i]} started command ${commands[0]}")
+                execs[i] = Pair(0, cmd)
+            } else if (cur.first == commands.size) {
+                // finished all commands
+                continue
+            } else {
+                allFinished = false
+                val curCmd = cur.second!!
+                if (curCmd.isOpen) {
+                    // current command still running
+                    continue
+                }
+                val result = IOUtils.readFully(curCmd.inputStream)
+                Logger.getGlobal().info("${vms[i]} finished command ${commands[cur.first]}, result: $result")
+                curCmd.join()
+                if (cur.first == commands.size - 1) {
+                    execs[i] = Pair(commands.size, null)
+                    continue
+                }
+                val cmd = session.exec(commands[cur.first + 1])
+                Logger.getGlobal().info("${vms[i]} started command ${commands[cur.first + 1]}")
+                execs[i] = Pair(cur.first + 1, cmd)
+            }
+        }
+        return allFinished
+    }
+
+    override suspend fun transit(launcher: Launcher): Task {
+        sessions.forEach { session ->
+            session.close()
+        }
+        return ShutdownTask.create(launcher, vms)
+    }
+
+    override fun isFinished(): Boolean {
+        return false
     }
 }
 
@@ -132,6 +216,7 @@ interface Launcher : Closeable {
     fun launchTask(image: String, nodeCount: Int): LaunchResult
     fun getTask(taskId: Uuid): Task?
 
+    fun createSession(vm: String): Session
     fun launchVm(task: Uuid, index: Int): VmOperation
     fun shutdownVm(instance: String): VmOperation
 }
@@ -143,6 +228,7 @@ class LauncherImpl: Launcher {
 
     val tasks = ConcurrentHashMap<Uuid, Task>()
     val instancesClient = InstancesClient.create()
+    val sshClient = SSHClient()
 
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
@@ -183,6 +269,17 @@ class LauncherImpl: Launcher {
 
     override fun close() {
         instancesClient.close()
+    }
+
+    override fun createSession(vm: String): Session {
+        val instance = instancesClient.get("kvas-loadtester", "us-east1-b", vm)
+        val ip = instance.networkInterfacesList.map { networkInterface ->
+            networkInterface.networkIP
+        }.first()
+
+        sshClient.connect(ip)
+        sshClient.authPublickey("neuromancer", "/Users/neuromancer/id_rsa.pub")
+        return sshClient.startSession()
     }
 
     override fun launchVm(task: Uuid, index: Int): VmOperation  {
