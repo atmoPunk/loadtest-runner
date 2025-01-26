@@ -29,6 +29,12 @@ dependencies {
     implementation(libs.ktor.server.netty)
     implementation(libs.logback.classic)
     implementation(libs.ktor.server.config.yaml)
+    implementation(platform("com.google.cloud:libraries-bom:26.53.0"))
+    implementation("com.google.cloud:google-cloud-compute")
+    implementation(platform("io.insert-koin:koin-bom:4.0.2"))
+    implementation("io.insert-koin:koin-core")
+    implementation("io.insert-koin:koin-ktor")
+    implementation("io.insert-koin:koin-logger-slf4j")
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlin.test.junit)
 }
