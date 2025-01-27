@@ -4,10 +4,7 @@ package kvas
 
 import com.google.api.gax.longrunning.OperationFuture
 import com.google.cloud.compute.v1.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
@@ -18,10 +15,15 @@ import kotlinx.serialization.encoding.Encoder
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.IOUtils
 import net.schmizz.sshj.connection.channel.direct.Session
+import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import java.io.Closeable
+import java.net.ConnectException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
@@ -59,8 +61,17 @@ object LaunchTaskSerializer : KSerializer<LaunchTask> {
 @Serializable(with = LaunchTaskSerializer::class)
 class LaunchTask(val launchOperations: OperationsMap) : Task {
     val launchedVms = ArrayList<String>()
+    private val timeSource = TimeSource.Monotonic
+    private var finishedAt: TimeSource.Monotonic.ValueTimeMark? = null
 
     override fun canTransit(): Boolean {
+        val now = timeSource.markNow()
+        if (finishedAt != null && (now - finishedAt!!) > 20.seconds) {
+            return true
+        }
+        if (finishedAt != null) {
+            return false
+        }
         launchOperations.filter { (_, op) -> op.isDone }.forEach { (vm, operation) ->
             launchOperations.remove(vm)
             val result = operation.get()
@@ -70,7 +81,10 @@ class LaunchTask(val launchOperations: OperationsMap) : Task {
                 launchedVms.add(vm)
             }
         }
-        return launchOperations.isEmpty()
+        if (launchOperations.isEmpty()) {
+            finishedAt = timeSource.markNow()
+        }
+        return false
     }
 
     override fun isFinished(): Boolean {
@@ -100,9 +114,9 @@ object RunTaskSerializer : KSerializer<RunTask> {
 }
 
 @Serializable(with = RunTaskSerializer::class)
-class RunTask(val vms: List<String>, private val sessions: List<Session>, private val commands: List<String>, private val execs: MutableList<Pair<Int, Session.Command?>>) : Task {
+class RunTask(val vms: List<String>, private val sessions: List<Pair<SSHClient, Session>>, private val commands: List<String>, private val execs: MutableList<Pair<Int, Session.Command?>>) : Task {
     companion object {
-        fun create(launcher: Launcher, vms: List<String>): RunTask {
+        suspend fun create(launcher: Launcher, vms: List<String>): RunTask {
             val execs: MutableList<Pair<Int, Session.Command?>> = vms.map {
                 Pair(-1, null)
             }.toMutableList()
@@ -119,7 +133,7 @@ class RunTask(val vms: List<String>, private val sessions: List<Session>, privat
         val totalVms = execs.size
         for (i in 0..<totalVms) {
             val cur = execs[i]
-            val session = sessions[i]
+            val session = sessions[i].second
             if (cur.first == -1) {
                 allFinished = false
                 val cmd = session.exec(commands[0])
@@ -152,7 +166,8 @@ class RunTask(val vms: List<String>, private val sessions: List<Session>, privat
 
     override suspend fun transit(launcher: Launcher): Task {
         sessions.forEach { session ->
-            session.close()
+            session.second.close() // close session
+            session.first.close() // close connection
         }
         return ShutdownTask.create(launcher, vms)
     }
@@ -216,7 +231,7 @@ interface Launcher : Closeable {
     fun launchTask(image: String, nodeCount: Int): LaunchResult
     fun getTask(taskId: Uuid): Task?
 
-    fun createSession(vm: String): Session
+    suspend fun createSession(vm: String): Pair<SSHClient, Session>
     fun launchVm(task: Uuid, index: Int): VmOperation
     fun shutdownVm(instance: String): VmOperation
 }
@@ -228,7 +243,6 @@ class LauncherImpl: Launcher {
 
     val tasks = ConcurrentHashMap<Uuid, Task>()
     val instancesClient = InstancesClient.create()
-    val sshClient = SSHClient()
 
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
@@ -271,15 +285,17 @@ class LauncherImpl: Launcher {
         instancesClient.close()
     }
 
-    override fun createSession(vm: String): Session {
+    override suspend fun createSession(vm: String): Pair<SSHClient, Session> {
         val instance = instancesClient.get("kvas-loadtester", "us-east1-b", vm)
         val ip = instance.networkInterfacesList.map { networkInterface ->
             networkInterface.networkIP
         }.first()
-
-        sshClient.connect(ip)
-        sshClient.authPublickey("neuromancer", "/Users/neuromancer/id_rsa.pub")
-        return sshClient.startSession()
+        logger.info("Try to connect to $ip")
+        val sshClient = SSHClient()
+        sshClient.addHostKeyVerifier(PromiscuousVerifier())
+        sshClient.connect(ip, 22)
+        sshClient.authPublickey("atmopunk", "/home/neuromancer/.ssh/id_ed25519")
+        return Pair(sshClient, sshClient.startSession())
     }
 
     override fun launchVm(task: Uuid, index: Int): VmOperation  {
