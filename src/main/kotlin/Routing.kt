@@ -27,24 +27,24 @@ fun Application.configureRouting() {
                 }
                 call.respond(launcher.launchTask(image, nodeCount))
             }
-            get("/test/{taskId}") {
-                val taskId: Uuid? = try {
-                    call.parameters["taskId"]?.let { Uuid.parse(it) }
-                } catch (e: IllegalArgumentException) {
-                    call.respond(HttpStatusCode.BadRequest, "Invalid task ID")
-                    return@get
-                }
-                if (taskId == null) {
-                    call.respond(HttpStatusCode.BadRequest, "Invalid task ID")
-                    return@get
-                }
-                val task = launcher.getTask(taskId)
-                if (task == null) {
-                    call.respond(HttpStatusCode.NotFound, "Task not found")
-                    return@get
-                }
-                call.respond(task)
-            }
+//            get("/test/{taskId}") {
+//                val taskId: Uuid? = try {
+//                    call.parameters["taskId"]?.let { Uuid.parse(it) }
+//                } catch (e: IllegalArgumentException) {
+//                    call.respond(HttpStatusCode.BadRequest, "Invalid task ID")
+//                    return@get
+//                }
+//                if (taskId == null) {
+//                    call.respond(HttpStatusCode.BadRequest, "Invalid task ID")
+//                    return@get
+//                }
+//                val task = launcher.getTask(taskId)
+//                if (task == null) {
+//                    call.respond(HttpStatusCode.NotFound, "Task not found")
+//                    return@get
+//                }
+//                call.respond(task)
+//            }
         }
     }
 }
