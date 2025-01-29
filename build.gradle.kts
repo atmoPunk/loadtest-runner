@@ -20,6 +20,12 @@ repositories {
     maven { url = uri("https://packages.confluent.io/maven/") }
 }
 
+jib {
+    from {
+        image = "docker://base-ssh-keys"
+    }
+}
+
 dependencies {
     implementation(libs.ktor.server.auth)
     implementation(libs.ktor.server.core)

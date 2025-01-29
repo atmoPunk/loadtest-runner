@@ -14,6 +14,7 @@ import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.schmizz.sshj.common.IOUtils
+import java.io.File
 
 interface VM : Closeable {
     suspend fun runCommand(cmd: String)
@@ -69,8 +70,10 @@ class VMImpl(val instance: String, private val ip: String, private val repo: VMR
         retry(3, {i, _ ->
             LOGGER.warn("$instance - could not establish ssh connection - attempt ${i + 1} out of 3")
         }) {
-            sshClient.connect(ip, 22)
-            sshClient.authPublickey("atmopunk", "/home/neuromancer/.ssh/id_ed25519")
+            if (!sshClient.isConnected) {
+                sshClient.connect(ip, 22)
+            }
+            sshClient.authPublickey(repo.sshLogin, repo.sshKeyFile)
         }
     }
 
@@ -82,6 +85,23 @@ class VMImpl(val instance: String, private val ip: String, private val repo: VMR
 
 class VMRepositoryImpl : VMRepository {
     private val instancesClient = InstancesClient.create()
+    private val sshPublicKey: String
+    val sshKeyFile: String
+    val sshLogin: String
+
+    init {
+        val sshLogin = System.getenv("SSH_LOGIN")
+        if (sshLogin == null || sshLogin.isEmpty()) {
+            throw RuntimeException("`SSH_LOGIN` env variable is not set")
+        }
+        val sshFile = System.getenv("SSH_FILE")
+        if (sshFile == null || sshFile.isEmpty()) {
+            throw RuntimeException("`SSH_FILE` env variable is not set")
+        }
+        this.sshLogin = sshLogin
+        sshKeyFile = sshFile
+        sshPublicKey = File("$sshFile.pub").readText()
+    }
 
     @OptIn(ExperimentalUuidApi::class)
     override suspend fun getVm(): VM {
@@ -110,10 +130,18 @@ class VMRepositoryImpl : VMRepository {
             addScopes("https://www.googleapis.com/auth/cloud-platform") // TODO: Limit scopes
         }
 
+        val metadata = Metadata.newBuilder().apply {
+            addItems(Items.newBuilder().apply {
+                key = "ssh-keys"
+                value = "$sshLogin:$sshPublicKey"
+            }.build())
+        }.build()
+
         val vmName = "kvas-${Uuid.random()}"
         val instance = Instance.newBuilder().apply {
             name = vmName
             machineType = "zones/us-east1-b/machineTypes/g1-small"
+            this.metadata = metadata
             addDisks(disk)
             addNetworkInterfaces(network)
             addServiceAccounts(serviceAccount)
