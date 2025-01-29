@@ -39,7 +39,8 @@ class LauncherImpl(val vmRepository: VMRepository): Launcher, KoinComponent {
             LOGGER.info("launched all nodes for task $uuid")
             vms.map { vm ->
                 scope.async {
-                    vm.runCommand("echo 'hello'")
+                    vm.runCommand("echo 'hetto' | wc")
+                    vm.runCommand("gcloud --help")
                 }
             }.awaitAll()
             LOGGER.info("executed all commands for task $uuid")
