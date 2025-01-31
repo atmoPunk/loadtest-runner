@@ -24,6 +24,9 @@ jib {
     from {
         image = "docker://base-ssh-keys"
     }
+    to {
+        image = "us-east1-docker.pkg.dev/kvas-loadtester/kvas-images/loadtest-runner:latest"
+    }
 }
 
 dependencies {

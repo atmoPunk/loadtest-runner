@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalUuidApi::class)
+
 package kvas
 
 import com.google.api.core.ApiFutureCallback
@@ -17,14 +19,16 @@ import net.schmizz.sshj.common.IOUtils
 import java.io.File
 
 interface VM : Closeable {
-    suspend fun runCommand(cmd: String)
+    suspend fun runCommand(cmd: String, saveLogs: Boolean)
+    val ip: String
+    val task: Uuid
 }
 
 interface VMRepository : Closeable {
-    suspend fun getVm(): VM
+    suspend fun getVm(prefix: String, task: Uuid): VM
 }
 
-class VMImpl(val instance: String, private val ip: String, private val repo: VMRepositoryImpl) : VM {
+class VMImpl(val instance: String, override val ip: String, override val task: Uuid, private val repo: VMRepositoryImpl) : VM {
     private val sshClient: SSHClient = SSHClient()
 
     companion object {
@@ -35,14 +39,23 @@ class VMImpl(val instance: String, private val ip: String, private val repo: VMR
         sshClient.addHostKeyVerifier(PromiscuousVerifier())
     }
 
-    override suspend fun runCommand(cmd: String) {
+    override suspend fun runCommand(cmd: String, saveLogs: Boolean) {
+        if (!saveLogs) {
+            runCommandImpl(cmd)
+            return
+        }
         // if cmd is actually several commands saves only logs of the last one
         val filename = cmd.filterNot { it == '|' || it == '\'' || it == '/' }.replace(' ', '-')
         val outFile = "$filename.out.txt"
         val errFile = "$filename.err.txt"
         val redirected = "$cmd > '$outFile' 2> '$errFile'"
-        runCommandImpl(redirected)
-        runCommandImpl("gcloud storage cp '$outFile' '$errFile' gs://kvas-loadtester-logs/$instance/")
+        try {
+            runCommandImpl(redirected)
+        } catch (e: RuntimeException) {
+            runCommandImpl("gcloud storage cp '$outFile' '$errFile' gs://kvas-loadtester-logs/$task/$instance/")
+            throw e
+        }
+        runCommandImpl("gcloud storage cp '$outFile' '$errFile' gs://kvas-loadtester-logs/$task/$instance/")
     }
 
     private suspend fun runCommandImpl(cmd: String) {
@@ -103,8 +116,7 @@ class VMRepositoryImpl : VMRepository {
         sshPublicKey = File("$sshFile.pub").readText()
     }
 
-    @OptIn(ExperimentalUuidApi::class)
-    override suspend fun getVm(): VM {
+    override suspend fun getVm(prefix: String, task: Uuid): VM {
         val disk = AttachedDisk.newBuilder().apply {
             boot = true
             autoDelete = true
@@ -112,7 +124,7 @@ class VMRepositoryImpl : VMRepository {
             deviceName = "disk-1"
             initializeParams = AttachedDiskInitializeParams.newBuilder().apply {
                 sourceImage = "projects/debian-cloud/global/images/family/debian-12"
-                diskSizeGb = 10L
+                diskSizeGb = 20L
             }.build()
         }.build()
 
@@ -137,7 +149,7 @@ class VMRepositoryImpl : VMRepository {
             }.build())
         }.build()
 
-        val vmName = "kvas-${Uuid.random()}"
+        val vmName = "$prefix-${Uuid.random()}"
         val instance = Instance.newBuilder().apply {
             name = vmName
             machineType = "zones/us-east1-b/machineTypes/g1-small"
@@ -165,8 +177,8 @@ class VMRepositoryImpl : VMRepository {
             networkInterface.networkIP
         }.first()
 
-        LOGGER.info("instance `$vmName` ($ip) successfully created")
-        return VMImpl(vmName, ip, this)
+        LOGGER.info("instance `$vmName` ($ip) successfully created for task $task")
+        return VMImpl(vmName, ip, task, this)
     }
 
     override fun close() {
