@@ -15,10 +15,18 @@ import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
 import net.schmizz.sshj.common.IOUtils
 import java.io.File
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 
-interface VM : Closeable {
+@Serializable
+sealed interface VM : Closeable {
     suspend fun runCommand(cmd: String, saveLogs: Boolean)
     val ip: String
     val task: Uuid
@@ -28,6 +36,24 @@ interface VMRepository : Closeable {
     suspend fun getVm(prefix: String, task: Uuid): VM
 }
 
+@Serializable
+@SerialName("VMImpl")
+data class VMImplRepr(val instance: String)
+
+@OptIn(ExperimentalSerializationApi::class)
+object VMImplSerializer : KSerializer<VMImpl> {
+    override val descriptor = SerialDescriptor("kvas.VMImpl", VMImplRepr.serializer().descriptor)
+
+    override fun serialize(encoder: Encoder, value: VMImpl) {
+        encoder.encodeSerializableValue(VMImplRepr.serializer(), VMImplRepr(value.instance))
+    }
+
+    override fun deserialize(decoder: Decoder): VMImpl {
+        throw UnsupportedOperationException("Deserialization is not supported for VMImpl")
+    }
+}
+
+@Serializable(with = VMImplSerializer::class)
 class VMImpl(val instance: String, override val ip: String, override val task: Uuid, private val repo: VMRepositoryImpl) : VM {
     private val sshClient: SSHClient = SSHClient()
 
