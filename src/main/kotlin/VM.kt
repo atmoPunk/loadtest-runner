@@ -29,6 +29,7 @@ import kotlinx.serialization.encoding.Encoder
 sealed interface VM : Closeable {
     suspend fun runCommand(cmd: String, saveLogs: Boolean)
     val ip: String
+    val externalIp: String
     val task: Uuid
 }
 
@@ -54,7 +55,7 @@ object VMImplSerializer : KSerializer<VMImpl> {
 }
 
 @Serializable(with = VMImplSerializer::class)
-class VMImpl(val instance: String, override val ip: String, override val task: Uuid, private val repo: VMRepositoryImpl) : VM {
+class VMImpl(val instance: String, override val ip: String, override val externalIp: String, override val task: Uuid, private val repo: VMRepositoryImpl) : VM {
     private val sshClient: SSHClient = SSHClient()
 
     companion object {
@@ -110,7 +111,7 @@ class VMImpl(val instance: String, override val ip: String, override val task: U
             LOGGER.warn("$instance - could not establish ssh connection - attempt ${i + 1} out of 3")
         }) {
             if (!sshClient.isConnected) {
-                sshClient.connect(ip, 22)
+                sshClient.connect(externalIp, 22)
             }
             sshClient.authPublickey(repo.sshLogin, repo.sshKeyFile)
         }
@@ -198,13 +199,16 @@ class VMRepositoryImpl : VMRepository {
             throw RuntimeException(result.error.toString())
         }
 
-        val resultInstance = instancesClient.get("kvas-loadtester", "us-east1-b", vmName)
-        val ip = resultInstance.networkInterfacesList.map { networkInterface ->
-            networkInterface.networkIP
+        val resultInstance = retry(3, {_, _ -> }) {
+            instancesClient.get("kvas-loadtester", "us-east1-b", vmName)
+        }
+
+        val (ip, externalIp) = resultInstance.networkInterfacesList.map { networkInterface ->
+            Pair(networkInterface.networkIP, networkInterface.accessConfigsList.first().natIP)
         }.first()
 
         LOGGER.info("instance `$vmName` ($ip) successfully created for task $task")
-        return VMImpl(vmName, ip, task, this)
+        return VMImpl(vmName, ip, externalIp, task, this)
     }
 
     override fun close() {
