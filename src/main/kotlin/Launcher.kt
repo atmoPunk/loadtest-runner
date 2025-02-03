@@ -39,12 +39,11 @@ class LauncherImpl(private val vmRepository: VMRepository): Launcher, KoinCompon
 
     override suspend fun launchTask(image: String, nodeCount: Int): Task {
         val uuid = Uuid.random()
-//        scope.launch {
-        LOGGER.info("launched task $uuid with image $image and $nodeCount nodes")
         tasks[uuid] = Task(uuid, TaskState.SETUP, null, mutableListOf())
-        runLoadtest(uuid, image, nodeCount)
-//        }
-//        tasks[uuid] = Task(uuid, TaskState.SETUP, null, mutableListOf())
+        scope.launch {
+            runLoadtest(uuid, image, nodeCount)
+        }
+        LOGGER.info("launched task $uuid with image $image and $nodeCount nodes")
         return tasks[uuid]!!
     }
 
