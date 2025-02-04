@@ -17,4 +17,9 @@ val applicationModule = module {
         createdAtStart()
         onClose { launcher -> launcher?.close() }
     }
+    singleOf(::LogStorageImpl) {
+        bind<LogStorage>()
+        createdAtStart()
+        onClose { storage -> storage?.close() }
+    }
 }

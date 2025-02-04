@@ -24,9 +24,18 @@ jib {
     from {
         image = "docker://base-ssh-keys"
     }
+    extraDirectories {
+        paths {
+            path {
+                setFrom("frontend/dist")
+                into = "${jib.container.appRoot}/frontend/dist"
+            }
+        }
+    }
     to {
         image = "us-east1-docker.pkg.dev/kvas-loadtester/kvas-images/loadtest-runner:latest"
     }
+
 }
 
 dependencies {
@@ -40,6 +49,7 @@ dependencies {
     implementation(libs.ktor.server.config.yaml)
     implementation(platform("com.google.cloud:libraries-bom:26.53.0"))
     implementation("com.google.cloud:google-cloud-compute")
+    implementation("com.google.cloud:google-cloud-storage")
     implementation(platform("io.insert-koin:koin-bom:4.0.2"))
     implementation("io.insert-koin:koin-core")
     implementation("io.insert-koin:koin-ktor")
@@ -48,3 +58,9 @@ dependencies {
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlin.test.junit)
 }
+
+task<Exec>("vite-build") {
+    workingDir("frontend")
+    commandLine("npm", "run", "build")
+}
+

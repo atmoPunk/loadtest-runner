@@ -53,10 +53,11 @@ class LauncherImpl(private val vmRepository: VMRepository): Launcher, KoinCompon
                 val clientVm = vmRepository.getVm("kvclient", uuid)
                 tasks[uuid]!!.client = clientVm
                 try {
+                    // TODO: prepare image
                     clientVm.runCommand("loginctl enable-linger", saveLogs = false)
                     clientVm.runCommand("sudo apt install -y podman", saveLogs = false)
-                    clientVm.runCommand("podman login ghcr.io -u USERNAME -p $ghcrToken", saveLogs = false)
-                    clientVm.runCommand("podman pull ghcr.io/bdse-class-2024/kvclient:51bee0409", saveLogs = false)
+                    clientVm.runCommand("podman login ghcr.io -u USERNAME -p $ghcrToken", saveLogs = false)  // TODO: Set token in VM env at creation
+                    clientVm.runCommand("podman pull $image", saveLogs = false)  // TODO: sanitize
                 } catch (e: Exception) {
                     clientVm.close()
                     throw e
