@@ -11,7 +11,8 @@ import io.ktor.server.routing.*
 import kotlin.time.Duration.Companion.seconds
 
 fun Application.configureSecurity() {
-    val authorizedUsers = mapOf<String, String>()
+    val authorizedUsers = mapOf<String, String>(
+    )
 
     authentication {
         basic(name = "default") {

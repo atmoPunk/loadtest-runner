@@ -28,7 +28,9 @@ sealed interface TaskType {
         fun fromString(input: String): TaskType {
             return when (input) {
                 "replication" -> ReplicationTaskType
-                "sharding-naive" -> NaiveShardingTaskType
+                "sharding-naive" -> ShardingTaskType("naive")
+                "sharding-linear" -> ShardingTaskType("linear")
+                "sharding-consistent" -> ShardingTaskType("consistent-hashing")
                 else -> throw IllegalArgumentException("Invalid task type: $input")
             }
         }
@@ -47,13 +49,13 @@ data object ReplicationTaskType : TaskType {
 }
 
 @Serializable
-data object NaiveShardingTaskType : TaskType {
+class ShardingTaskType(private val shardingType: String) : TaskType {
     override fun getLeaderCommand(leaderIp: String): String {
-        return "sudo docker run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=$leaderIp:9000 --storage=dbms --db-host kvas-postgres --sharding naive metadata --master"
+        return "sudo docker run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=$leaderIp:9000 --storage=dbms --db-host kvas-postgres --sharding $shardingType metadata --master"
     }
 
     override fun getVmCommand(leaderIp: String, vmIp: String): String {
-        return "sudo docker run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=$vmIp:9000 --storage=dbms --db-host kvas-postgres --sharding naive metadata --address $leaderIp:9000"
+        return "sudo docker run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=$vmIp:9000 --storage=dbms --db-host kvas-postgres --sharding $shardingType metadata --address $leaderIp:9000"
     }
 }
 
@@ -96,7 +98,7 @@ class LauncherImpl(private val vmRepository: VMRepository): Launcher, KoinCompon
                     // clientVm.runCommand("loginctl enable-linger", saveLogs = false)
                     // clientVm.runCommand("sudo apt install -y podman", saveLogs = false)
                     clientVm.runCommand("sudo docker login ghcr.io -u USERNAME -p $ghcrToken", saveLogs = false)  // TODO: Set token in VM env at creation
-                    clientVm.runCommand("sudo docker pull $image", saveLogs = false)  // TODO: sanitize
+                    clientVm.runCommand("sudo docker pull \"$image\"", saveLogs = false)  // TODO: sanitize
                 } catch (e: Exception) {
                     clientVm.close()
                     throw e

@@ -9,7 +9,7 @@ import { atom } from 'nanostores'
 import { useStore } from '@nanostores/react'
 import { persistentAtom } from '@nanostores/persistent'
 
-type TaskType = 'replication' | 'sharding-naive';
+type TaskType = 'replication' | 'sharding-naive' | 'sharding-linear' | 'sharding-consistent';
 
 interface FormData {
     image: string
@@ -155,6 +155,13 @@ function App() {
         $logUrls.set([]);
     }, []);
 
+    const taskTypes = [
+        {label: 'Replication', value: 'replication'},
+        {label: 'Sharding (naive)', value: 'sharding-naive'},
+        {label: 'Sharding (linear)', value: 'sharding-linear'},
+        {label: 'Sharding (consistent hashing)', value: 'sharding-consistent'},
+    ]
+
   return (
     <MantineProvider>
         <Stack>
@@ -164,7 +171,7 @@ function App() {
                 <Stack>
                     <TextInput label="Image" {...testForm.getInputProps('image')} />
                     <NumberInput label="Node count" min={1} max={7} {...testForm.getInputProps('nodeCount')} />
-                    <NativeSelect label="Task type" data={[{label: 'Replication', value: 'replication'}, {label: 'Sharding (naive)', value: 'sharding-naive'}] as const} {...testForm.getInputProps('task')} />
+                    <NativeSelect label="Task type" data={taskTypes} {...testForm.getInputProps('task')} />
                     <Button type="submit">Launch</Button>
                 </Stack>
             </form>

@@ -151,6 +151,7 @@ class VMRepositoryImpl : VMRepository {
             type = AttachedDisk.Type.PERSISTENT.toString()
             deviceName = "disk-1"
             initializeParams = AttachedDiskInitializeParams.newBuilder().apply {
+                // Prepared disk image with installed docker and pre-pulled postgres docker image
                 sourceImage = "projects/kvas-loadtester/global/images/kvnode-base-image"
                 diskSizeGb = 20L
             }.build()
