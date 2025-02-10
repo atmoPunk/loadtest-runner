@@ -20,10 +20,49 @@ enum class TaskState {
 }
 
 @Serializable
-data class Task(val uuid: Uuid, var state: TaskState, var client: VM?, var nodes: MutableList<VM>)
+sealed interface TaskType {
+    fun getLeaderCommand(leaderIp: String): String
+    fun getVmCommand(leaderIp: String, vmIp: String): String
+
+    companion object {
+        fun fromString(input: String): TaskType {
+            return when (input) {
+                "replication" -> ReplicationTaskType
+                "sharding-naive" -> NaiveShardingTaskType
+                else -> throw IllegalArgumentException("Invalid task type: $input")
+            }
+        }
+    }
+}
+
+@Serializable
+data object ReplicationTaskType : TaskType {
+    override fun getLeaderCommand(leaderIp: String): String {
+        return "sudo docker run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=$leaderIp:9000 --storage=dbms --db-host kvas-postgres replication --role=leader metadata --master"
+    }
+
+    override fun getVmCommand(leaderIp: String, vmIp: String): String {
+        return "sudo docker run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=$vmIp:9000 --storage=dbms --db-host kvas-postgres metadata --address $leaderIp:9000 replication --role=follower"
+    }
+}
+
+@Serializable
+data object NaiveShardingTaskType : TaskType {
+    override fun getLeaderCommand(leaderIp: String): String {
+        return "sudo docker run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=$leaderIp:9000 --storage=dbms --db-host kvas-postgres --sharding naive metadata --master"
+    }
+
+    override fun getVmCommand(leaderIp: String, vmIp: String): String {
+        return "sudo docker run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=$vmIp:9000 --storage=dbms --db-host kvas-postgres --sharding naive metadata --address $leaderIp:9000"
+    }
+}
+
+
+@Serializable
+data class Task(val uuid: Uuid, var state: TaskState, var client: VM?, var nodes: MutableList<VM>, var leaderInstance: String? = null)
 
 interface Launcher : Closeable {
-    suspend fun launchTask(image: String, nodeCount: Int): Task
+    suspend fun launchTask(image: String, nodeCount: Int, taskType: TaskType): Task
     fun getTask(uuid: Uuid): Task?
 }
 
@@ -37,27 +76,27 @@ class LauncherImpl(private val vmRepository: VMRepository): Launcher, KoinCompon
     private val ghcrToken: String = System.getenv("CR_PAT")!!
     private val tasks = ConcurrentHashMap<Uuid, Task>()
 
-    override suspend fun launchTask(image: String, nodeCount: Int): Task {
+    override suspend fun launchTask(image: String, nodeCount: Int, taskType: TaskType): Task {
         val uuid = Uuid.random()
         tasks[uuid] = Task(uuid, TaskState.SETUP, null, mutableListOf())
         scope.launch {
-            runLoadtest(uuid, image, nodeCount)
+            runLoadtest(uuid, image, nodeCount, taskType)
         }
         LOGGER.info("launched task $uuid with image $image and $nodeCount nodes")
         return tasks[uuid]!!
     }
 
-    suspend fun runLoadtest(uuid: Uuid, image: String, nodeCount: Int) {
+    private suspend fun runLoadtest(uuid: Uuid, image: String, nodeCount: Int, taskType: TaskType) {
         try {
             val clientVm = scope.async {
                 val clientVm = vmRepository.getVm("kvclient", uuid)
                 tasks[uuid]!!.client = clientVm
                 try {
                     // TODO: prepare image
-                    clientVm.runCommand("loginctl enable-linger", saveLogs = false)
-                    clientVm.runCommand("sudo apt install -y podman", saveLogs = false)
-                    clientVm.runCommand("podman login ghcr.io -u USERNAME -p $ghcrToken", saveLogs = false)  // TODO: Set token in VM env at creation
-                    clientVm.runCommand("podman pull $image", saveLogs = false)  // TODO: sanitize
+                    // clientVm.runCommand("loginctl enable-linger", saveLogs = false)
+                    // clientVm.runCommand("sudo apt install -y podman", saveLogs = false)
+                    clientVm.runCommand("sudo docker login ghcr.io -u USERNAME -p $ghcrToken", saveLogs = false)  // TODO: Set token in VM env at creation
+                    clientVm.runCommand("sudo docker pull $image", saveLogs = false)  // TODO: sanitize
                 } catch (e: Exception) {
                     clientVm.close()
                     throw e
@@ -69,25 +108,22 @@ class LauncherImpl(private val vmRepository: VMRepository): Launcher, KoinCompon
                 LOGGER.info("launched all nodes for task $uuid")
                 vms.map { vm ->
                     scope.async {
-                        vm.runCommand("loginctl enable-linger", saveLogs = false)
-                        vm.runCommand("sudo apt install -y podman", saveLogs = false)
-                        vm.runCommand("podman login ghcr.io -u USERNAME -p $ghcrToken", saveLogs = false)
-                        vm.runCommand("podman network create kvas-network", saveLogs = false)
+                        vm.runCommand("sudo docker login ghcr.io -u USERNAME -p $ghcrToken", saveLogs = false)
                         vm.runCommand(
-                            "podman run -d --name kvas-postgres --network kvas-network -e POSTGRES_HOST_AUTH_METHOD=trust docker.io/library/postgres:16-bookworm",
+                            "sudo docker run -d --name kvas-postgres --network kvas-network -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16-bookworm",
                             saveLogs = false
                         )
-                        vm.runCommand("podman pull ghcr.io/bdse-class-2024/kvnode:51bee0409", saveLogs = false)
+                        vm.runCommand("sudo docker pull ghcr.io/bdse-class-2024/kvnode:51bee0409", saveLogs = false)
                         vm.runCommand(
-                            "podman run -it --rm --entrypoint cat ghcr.io/bdse-class-2024/kvnode:51bee0409 /app/resources/postgres-init.sql > ~/postgres-init.sql",
+                            "sudo docker run --rm --entrypoint cat ghcr.io/bdse-class-2024/kvnode:51bee0409 /app/resources/postgres-init.sql > ~/postgres-init.sql",
                             saveLogs = false
                         )
                         vm.runCommand(
-                            "podman cp ~/postgres-init.sql kvas-postgres:/root/postgres-init.sql",
+                            "sudo docker cp ~/postgres-init.sql kvas-postgres:/root/postgres-init.sql",
                             saveLogs = false
                         )
                         vm.runCommand(
-                            "podman exec -it kvas-postgres psql -h localhost -U postgres -f /root/postgres-init.sql",
+                            "sudo docker exec kvas-postgres psql -h localhost -U postgres -f /root/postgres-init.sql",
                             saveLogs = false
                         )
                     }
@@ -95,29 +131,24 @@ class LauncherImpl(private val vmRepository: VMRepository): Launcher, KoinCompon
                 LOGGER.info("Setup of all nodes done for task $uuid")
                 tasks[uuid]!!.state = TaskState.RUNNING
                 val leader = vms.first()
-                leader.runCommand(
-                    "podman run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=${leader.ip}:9000 --storage=dbms --db-host kvas-postgres replication --role=leader metadata --master",
-                    saveLogs = false
-                )
+                tasks[uuid]!!.leaderInstance = leader.instance
+                leader.runCommand(taskType.getLeaderCommand(leader.ip), saveLogs = false)
                 vms.drop(1).map { vm ->
                     scope.async {
-                        vm.runCommand(
-                            "podman run -d --name kvas-node -p 9000:9000 --network kvas-network ghcr.io/bdse-class-2024/kvnode:51bee0409 --self-address=${vm.ip}:9000 --storage=dbms --db-host kvas-postgres metadata --address ${leader.ip}:9000 replication --role=follower",
-                            saveLogs = false
-                        )
+                        vm.runCommand(taskType.getVmCommand(leader.ip, vm.ip), saveLogs = false)
                     }
-                }.awaitAll()
+                }
                 LOGGER.info("All nodes launched kvas for task $uuid")
                 clientVm.await().use { clientVm ->
                     clientVm.runCommand(
-                        "podman run --name kvas-client ghcr.io/bdse-class-2024/kvclient:51bee0409 --metadata-address=${leader.ip}:9000 loadtest --key-count=10",
+                        "sudo docker run --name kvas-client ghcr.io/bdse-class-2024/kvclient:51bee0409 --metadata-address=${leader.ip}:9000 loadtest --key-count=10",
                         saveLogs = true
                     )
                 }
                 LOGGER.info("Loadtest finished for task $uuid")
                 vms.map { vm ->
                     scope.async {
-                        vm.runCommand("podman logs kvas-node", saveLogs = true)
+                        vm.runCommand("sudo docker logs kvas-node", saveLogs = true)
                     }
                 }.awaitAll()
                 LOGGER.info("Logs saved for task $uuid")

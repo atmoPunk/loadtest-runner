@@ -31,6 +31,7 @@ sealed interface VM : Closeable {
     val ip: String
     val externalIp: String
     val task: Uuid
+    val instance: String
 }
 
 interface VMRepository : Closeable {
@@ -39,14 +40,14 @@ interface VMRepository : Closeable {
 
 @Serializable
 @SerialName("VMImpl")
-data class VMImplRepr(val instance: String)
+data class VMImplRepr(val instance: String, val ip: String)
 
 @OptIn(ExperimentalSerializationApi::class)
 object VMImplSerializer : KSerializer<VMImpl> {
     override val descriptor = SerialDescriptor("kvas.VMImpl", VMImplRepr.serializer().descriptor)
 
     override fun serialize(encoder: Encoder, value: VMImpl) {
-        encoder.encodeSerializableValue(VMImplRepr.serializer(), VMImplRepr(value.instance))
+        encoder.encodeSerializableValue(VMImplRepr.serializer(), VMImplRepr(value.instance, value.ip))
     }
 
     override fun deserialize(decoder: Decoder): VMImpl {
@@ -55,7 +56,7 @@ object VMImplSerializer : KSerializer<VMImpl> {
 }
 
 @Serializable(with = VMImplSerializer::class)
-class VMImpl(val instance: String, override val ip: String, override val externalIp: String, override val task: Uuid, private val repo: VMRepositoryImpl) : VM {
+class VMImpl(override val instance: String, override val ip: String, override val externalIp: String, override val task: Uuid, private val repo: VMRepositoryImpl) : VM {
     private val sshClient: SSHClient = SSHClient()
 
     companion object {
@@ -150,7 +151,7 @@ class VMRepositoryImpl : VMRepository {
             type = AttachedDisk.Type.PERSISTENT.toString()
             deviceName = "disk-1"
             initializeParams = AttachedDiskInitializeParams.newBuilder().apply {
-                sourceImage = "projects/debian-cloud/global/images/family/debian-12"
+                sourceImage = "projects/kvas-loadtester/global/images/kvnode-base-image"
                 diskSizeGb = 20L
             }.build()
         }.build()
@@ -165,8 +166,9 @@ class VMRepositoryImpl : VMRepository {
         }.build()
 
         val serviceAccount = ServiceAccount.newBuilder().apply {
-            email = "584796664311-compute@developer.gserviceaccount.com"
-            addScopes("https://www.googleapis.com/auth/cloud-platform") // TODO: Limit scopes
+            // Service account with only object storage access
+            email = "kvnode@kvas-loadtester.iam.gserviceaccount.com"
+            addScopes("https://www.googleapis.com/auth/cloud-platform")
         }
 
         val metadata = Metadata.newBuilder().apply {
@@ -199,7 +201,9 @@ class VMRepositoryImpl : VMRepository {
             throw RuntimeException(result.error.toString())
         }
 
-        val resultInstance = retry(3, {_, _ -> }) {
+        val resultInstance = retry(3, {_, e ->
+            LOGGER.error("Could not get information about $vmName", e)
+        }) {
             instancesClient.get("kvas-loadtester", "us-east1-b", vmName)
         }
 

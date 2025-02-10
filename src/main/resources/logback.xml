@@ -11,4 +11,6 @@
     <logger name="io.netty" level="INFO"/>
     <logger name="net.schmizz" level="INFO"/>
     <logger name="n.s.sshj" level="INFO"/>
+    <logger name="io.ktor.server.auth" level="INFO"/>
+    <logger name="io.ktor.server.routing" level="INFO"/>
 </configuration>

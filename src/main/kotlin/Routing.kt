@@ -31,11 +31,16 @@ fun Application.configureRouting() {
             post("/api/test") {
                 val image = call.parameters["image"]
                 val nodeCount = call.parameters["node_count"]?.toIntOrNull() ?: 1
+                val taskType = call.parameters["task_type"]
                 if (image == null) {
                     call.respond(HttpStatusCode.BadRequest, "Missing image query parameter")
                     return@post
                 }
-                call.respond(launcher.launchTask(image, nodeCount))
+                if (taskType == null) {
+                    call.respond(HttpStatusCode.BadRequest, "Missing task_type query parameter")
+                    return@post
+                }
+                call.respond(launcher.launchTask(image, nodeCount, TaskType.fromString(taskType)))
             }
             get("/api/test/{taskId}") {
                 val taskId: Uuid? = try {

@@ -1,35 +1,60 @@
 import './App.css'
 import '@mantine/core/styles.css'
 
-import { MantineProvider, TextInput, NumberInput, Button, Text, Divider, Container, NativeSelect, Anchor, List } from '@mantine/core'
+import { MantineProvider, TextInput, NumberInput, Button, Text, Divider, Container, NativeSelect, Anchor, Stack, Badge, Group, Title } from '@mantine/core'
 
 import { useForm } from '@mantine/form'
 import { useCallback, useEffect } from 'react'
 import { atom } from 'nanostores'
 import { useStore } from '@nanostores/react'
+import { persistentAtom } from '@nanostores/persistent'
 
-type TaskType = 'replication' | 'sharding';
+type TaskType = 'replication' | 'sharding-naive';
 
 interface FormData {
-    image: string;
-    nodeCount: number;
-    task: TaskType;
+    image: string
+    nodeCount: number
+    task: TaskType
 }
 
 interface VM {
-    type: string;
+    type: string
     instance: string
+    ip: string
 }
 
 interface TestData {
-    uuid: string,
-    state: string,
-    client: VM | null,
-    nodes: VM[],
+    uuid: string
+    state: string
+    client: VM | null
+    nodes: VM[]
+    leaderInstance: string | null
 }
 
-export const $currentTest = atom<TestData | null>(null);
+interface LogUrls {
+    stdout: string
+    stderr: string
+}
+
+export const $currentTest = persistentAtom<TestData | null>("currentTest", null, {
+    encode: JSON.stringify,
+    decode: JSON.parse
+});
+
 export const $logUrls = atom<string[]>([]);
+
+function VMText(vm: VM, logUrls: Map<string, LogUrls>, isLeader: boolean) {
+    let outLog = null;
+    let errLog = null;
+    if (logUrls.has(vm.instance)) {
+        const urls = logUrls.get(vm.instance)!!;
+        outLog = <Anchor href={urls.stdout}>stdout</Anchor>
+        errLog = <Anchor href={urls.stderr}>stderr</Anchor>
+    }
+    return <Text>
+        { vm.instance }{ isLeader ? <Text c="red" span inherit>*</Text> : null} ({ vm.ip }) { outLog } { errLog }
+    </Text>
+}
 
 function CurrentTest() {
     const currentTest = useStore($currentTest);
@@ -69,24 +94,44 @@ function CurrentTest() {
         return null;
     }
 
-    const logAnchors = logUrls.map((url) => {
+    const lUrls = new Map<string, LogUrls>();
+    logUrls.forEach((url) => {
         const [instance, cmdFull] = url.split('?')[0].split('/').slice(5);
-        const cmd = cmdFull.split('-', 1)[0];
-        const ext = cmdFull.slice(-8);
+        const ext = cmdFull.slice(-7, -4);
+        const logUrls: LogUrls = lUrls.get(instance) ?? {stdout: '', stderr: ''};
+        if (ext == 'out') {
+            logUrls.stdout = url;
+        } else {
+            logUrls.stderr = url;
+        }
+        lUrls.set(instance, logUrls);
+    })
 
-        return <Anchor href={url}>{`${instance}/${cmd}${ext}`}</Anchor>
-    });
+    const nodeItems = currentTest.nodes.map((vm) => {
+        const isLeader = currentTest.leaderInstance ? (vm.instance == currentTest.leaderInstance) : false;
+        return VMText(vm, lUrls, isLeader);
+    })
 
-    return <Container>
-        <Text>
-            { JSON.stringify(currentTest) }
-        </Text>
-        <Divider />
-        <List>
-            { logAnchors.map((a) => {
-                return <List.Item>{a}</List.Item>
-            }) }
-        </List>
+    let stateBadge = null;
+    switch (currentTest.state) {
+        case 'SETUP':
+            stateBadge = <Badge color="yellow">Setup</Badge>
+            break;
+        case 'RUNNING':
+            stateBadge = <Badge color="blue">Running</Badge>
+            break;
+        case 'FAILURE':
+            stateBadge = <Badge color="red">Failure</Badge>
+            break;
+        case 'FINISHED':
+            stateBadge = <Badge color="green">Finished</Badge>
+            break;
+    }
+
+    return <Container ta="left">
+        <Group><Title order={6}>Test: { currentTest.uuid }</Title> { stateBadge }</Group>
+        { currentTest.client ? VMText(currentTest.client, lUrls, false) : null }
+        { nodeItems }
     </Container>;
 }
 
@@ -101,24 +146,31 @@ function App() {
 
     const onSubmit = useCallback(async (formData: FormData) => {
         console.log(formData);
-        const response = await fetch(`/api/test?image=${formData.image}&node_count=${formData.nodeCount}`, {
+        const response = await fetch(`/api/test?image=${formData.image}&node_count=${formData.nodeCount}&task_type=${formData.task}`, {
             method: 'POST',
         });
         const json = await response.json();
         console.log(json);
         $currentTest.set(json);
+        $logUrls.set([]);
     }, []);
 
   return (
     <MantineProvider>
-        <h1>Hello, world!</h1>
-        <form onSubmit={testForm.onSubmit(onSubmit)}>
-            <TextInput {...testForm.getInputProps('image')} />
-            <NumberInput {...testForm.getInputProps('nodeCount')} />
-            <NativeSelect data={['replication', 'sharding'] as const} {...testForm.getInputProps('task')} />
-            <Button type="submit">Launch</Button>
-        </form>
-        <CurrentTest/>
+        <Stack>
+            <Title order={1}>Kvas Loadtest Runner</Title>
+            <Divider />
+            <form onSubmit={testForm.onSubmit(onSubmit)}>
+                <Stack>
+                    <TextInput label="Image" {...testForm.getInputProps('image')} />
+                    <NumberInput label="Node count" min={1} max={7} {...testForm.getInputProps('nodeCount')} />
+                    <NativeSelect label="Task type" data={[{label: 'Replication', value: 'replication'}, {label: 'Sharding (naive)', value: 'sharding-naive'}] as const} {...testForm.getInputProps('task')} />
+                    <Button type="submit">Launch</Button>
+                </Stack>
+            </form>
+            <Divider />
+            <CurrentTest/>
+        </Stack>
     </MantineProvider>
   )
 }
